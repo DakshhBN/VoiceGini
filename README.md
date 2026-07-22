@@ -12,9 +12,9 @@ Speech-to-speech voicebot: browser mic/speaker in, cascaded STT -> LangGraph/Gro
 
 ## Build phases
 
-- **Phase 0** (current): repo scaffolding, auth, DB — no voice yet.
+- **Phase 0**: repo scaffolding, auth, DB — no voice yet.
 - **Phase 1**: text-only chat backed by LangGraph (reuses ChatGini's pattern).
-- **Phase 2**: add STT + WebSocket ticket auth, no VAD/TTS.
+- **Phase 2** (current): add STT + WebSocket ticket auth, no VAD/TTS.
 - **Phase 3**: add TTS, full voice loop, no interruption yet.
 - **Phase 4**: add VAD + barge-in/interruption handling.
 - **Phase 5**: polish, deploy, harden (always-on hosting, reconnection UX, cost tracking).

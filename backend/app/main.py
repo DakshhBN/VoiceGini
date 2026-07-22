@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import get_settings
-from app.routers import auth, threads
+from app.routers import auth, threads, voice
 
 logger = logging.getLogger("app")
 
@@ -63,6 +63,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(threads.router)
+app.include_router(voice.router)
 
 
 @app.get("/health")

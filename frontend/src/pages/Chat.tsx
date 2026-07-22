@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Mic, Square } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,6 +11,7 @@ import {
   listThreads,
   streamChat,
 } from '@/lib/chat-api'
+import { connectVoiceSocket, type VoiceEvent } from '@/lib/voice-api'
 
 export default function Chat() {
   const { user, logout } = useAuth()
@@ -18,8 +20,22 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
+  const [recording, setRecording] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Voice socket state lives in refs, not React state - it's mutated from
+  // event callbacks (MediaRecorder, WebSocket) that shouldn't trigger
+  // re-renders on every chunk, and the socket must survive across
+  // multiple push-to-talk utterances within the same thread.
+  const voiceSocketRef = useRef<WebSocket | null>(null)
+  const voiceThreadIdRef = useRef<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const activeThreadIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId
+  }, [activeThreadId])
 
   useEffect(() => {
     listThreads().then((loaded) => {
@@ -39,6 +55,21 @@ export default function Chat() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    return () => {
+      voiceSocketRef.current?.close()
+    }
+  }, [])
+
+  function appendToken(token: string) {
+    setMessages((prev) => {
+      const next = [...prev]
+      const last = next[next.length - 1]
+      next[next.length - 1] = { role: 'assistant', content: last.content + token }
+      return next
+    })
+  }
 
   async function handleNewThread() {
     const thread = await createThread()
@@ -64,19 +95,104 @@ export default function Chat() {
     setMessages((prev) => [...prev, { role: 'user', content }, { role: 'assistant', content: '' }])
 
     try {
-      await streamChat(threadId, content, (token) => {
-        setMessages((prev) => {
-          const next = [...prev]
-          const last = next[next.length - 1]
-          next[next.length - 1] = { role: 'assistant', content: last.content + token }
-          return next
-        })
-      })
+      await streamChat(threadId, content, appendToken)
     } catch {
       setError('Failed to get a response')
     } finally {
       setSending(false)
     }
+  }
+
+  function handleVoiceEvent(event: VoiceEvent) {
+    switch (event.type) {
+      case 'transcript':
+        setMessages((prev) => [
+          ...prev,
+          { role: 'user', content: event.text },
+          { role: 'assistant', content: '' },
+        ])
+        break
+      case 'token':
+        appendToken(event.token)
+        break
+      case 'done':
+        setSending(false)
+        break
+      case 'error':
+        setError(event.detail)
+        setSending(false)
+        break
+    }
+  }
+
+  // Reused across utterances in the same thread rather than reconnecting
+  // per recording - a fresh ticket-authenticated connection per utterance
+  // would add a network round trip before every reply.
+  async function ensureVoiceSocket(threadId: string): Promise<WebSocket> {
+    const existing = voiceSocketRef.current
+    if (existing && voiceThreadIdRef.current === threadId && existing.readyState === WebSocket.OPEN) {
+      return existing
+    }
+    existing?.close()
+
+    const ws = await connectVoiceSocket(threadId)
+    ws.onmessage = (e) => handleVoiceEvent(JSON.parse(e.data) as VoiceEvent)
+    ws.onclose = () => {
+      if (voiceSocketRef.current === ws) voiceSocketRef.current = null
+    }
+    voiceSocketRef.current = ws
+    voiceThreadIdRef.current = threadId
+    return ws
+  }
+
+  async function startRecording() {
+    if (recording || sending) return
+    setError(null)
+
+    let threadId = activeThreadId
+    if (!threadId) {
+      const thread = await createThread()
+      setThreads((prev) => [thread, ...prev])
+      threadId = thread.id
+      setActiveThreadId(threadId)
+    }
+
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      setError('Microphone access denied')
+      return
+    }
+
+    const socketPromise = ensureVoiceSocket(threadId)
+
+    const chunks: BlobPart[] = []
+    const recorder = new MediaRecorder(stream)
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data)
+    }
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop())
+      const blob = new Blob(chunks, { type: recorder.mimeType })
+      try {
+        const ws = await socketPromise
+        setSending(true)
+        ws.send(blob)
+      } catch {
+        setError('Failed to connect voice channel')
+      }
+    }
+
+    mediaRecorderRef.current = recorder
+    recorder.start()
+    setRecording(true)
+  }
+
+  function stopRecording() {
+    if (!recording) return
+    mediaRecorderRef.current?.stop()
+    setRecording(false)
   }
 
   return (
@@ -142,6 +258,26 @@ export default function Chat() {
             placeholder="Message…"
             disabled={sending}
           />
+          <Button
+            type="button"
+            variant={recording ? 'destructive' : 'secondary'}
+            size="icon"
+            disabled={sending && !recording}
+            onMouseDown={startRecording}
+            onMouseUp={stopRecording}
+            onMouseLeave={stopRecording}
+            onTouchStart={(e) => {
+              e.preventDefault()
+              startRecording()
+            }}
+            onTouchEnd={(e) => {
+              e.preventDefault()
+              stopRecording()
+            }}
+            title="Hold to talk"
+          >
+            {recording ? <Square className="size-4" /> : <Mic className="size-4" />}
+          </Button>
           <Button type="submit" disabled={sending || !input.trim()}>
             Send
           </Button>

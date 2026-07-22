@@ -2,10 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.auth import create_access_token, create_ws_ticket, get_current_user, hash_password, verify_password
 from app.database import get_db
 from app.models import User
-from app.schemas import Token, UserCreate, UserLogin, UserOut
+from app.schemas import Token, UserCreate, UserLogin, UserOut, WsTicketOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -37,3 +37,8 @@ async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)) -> Token
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)) -> User:
     return current_user
+
+
+@router.post("/ws-ticket", response_model=WsTicketOut)
+async def ws_ticket(current_user: User = Depends(get_current_user)) -> WsTicketOut:
+    return WsTicketOut(ticket=create_ws_ticket(str(current_user.id)))

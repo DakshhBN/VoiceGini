@@ -47,3 +47,7 @@ class MessageIn(BaseModel):
 class MessageOut(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+
+
+class WsTicketOut(BaseModel):
+    ticket: str

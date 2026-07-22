@@ -43,6 +43,33 @@ def decode_access_token(token: str) -> str:
     return subject
 
 
+# Browser WebSocket clients can't set an Authorization header, so the
+# access token can't be reused directly for the WS handshake - a query
+# string is the only place to put a credential, and access tokens are
+# too long-lived to expose there. Instead: mint a one-off, 30s-lived
+# ticket over the existing authenticated HTTP connection, then pass
+# that in the WS URL. A distinct "type" claim keeps it from being
+# usable as a substitute access token even if it leaked into logs.
+WS_TICKET_TYPE = "ws_ticket"
+WS_TICKET_EXPIRE_SECONDS = 30
+
+
+def create_ws_ticket(subject: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(seconds=WS_TICKET_EXPIRE_SECONDS)
+    payload = {"sub": subject, "exp": expire, "type": WS_TICKET_TYPE}
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def decode_ws_ticket(ticket: str) -> str | None:
+    try:
+        payload = jwt.decode(ticket, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except jwt.PyJWTError:
+        return None
+    if payload.get("type") != WS_TICKET_TYPE:
+        return None
+    return payload.get("sub")
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db),
