@@ -10,6 +10,7 @@ from app.database import AsyncSessionLocal
 from app.graph import get_graph
 from app.models import Thread, User
 from app.stt import transcribe
+from app.tts import synthesize
 
 router = APIRouter(tags=["voice"])
 
@@ -73,9 +74,26 @@ async def voice(websocket: WebSocket, thread_id: uuid.UUID) -> None:
                 await websocket.send_json({"type": "transcript", "text": text})
 
                 input_state = {"messages": [HumanMessage(content=text)]}
+                reply_text = ""
                 async for chunk, _metadata in graph.astream(input_state, config, stream_mode="messages"):
                     if chunk.content:
+                        reply_text += chunk.content
                         await websocket.send_json({"type": "token", "token": chunk.content})
+
+                if reply_text.strip():
+                    try:
+                        audio_bytes = await synthesize(reply_text)
+                    except Exception:
+                        await websocket.send_json({"type": "error", "detail": "Speech synthesis failed"})
+                    else:
+                        # A JSON marker ahead of the raw bytes tells the
+                        # client the next binary frame is audio, not a
+                        # continuation of the text stream - the two share
+                        # one WS connection but are distinguished by frame
+                        # type (text vs binary) on the client side.
+                        await websocket.send_json({"type": "audio", "format": "wav"})
+                        await websocket.send_bytes(audio_bytes)
+
                 await websocket.send_json({"type": "done"})
         except WebSocketDisconnect:
             pass

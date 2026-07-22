@@ -21,6 +21,7 @@ export default function Chat() {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [recording, setRecording] = useState(false)
+  const [speaking, setSpeaking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -32,6 +33,7 @@ export default function Chat() {
   const voiceThreadIdRef = useRef<string | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const activeThreadIdRef = useRef<string | null>(null)
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
 
   useEffect(() => {
     activeThreadIdRef.current = activeThreadId
@@ -59,6 +61,7 @@ export default function Chat() {
   useEffect(() => {
     return () => {
       voiceSocketRef.current?.close()
+      currentAudioRef.current?.pause()
     }
   }, [])
 
@@ -115,6 +118,10 @@ export default function Chat() {
       case 'token':
         appendToken(event.token)
         break
+      case 'audio':
+        // No-op marker - the actual audio arrives as the next binary WS
+        // frame, handled by the socket's onmessage Blob branch below.
+        break
       case 'done':
         setSending(false)
         break
@@ -123,6 +130,25 @@ export default function Chat() {
         setSending(false)
         break
     }
+  }
+
+  function playAudio(blob: Blob) {
+    currentAudioRef.current?.pause()
+
+    const url = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    currentAudioRef.current = audio
+
+    const cleanup = () => {
+      URL.revokeObjectURL(url)
+      if (currentAudioRef.current === audio) currentAudioRef.current = null
+      setSpeaking(false)
+    }
+    audio.onended = cleanup
+    audio.onerror = cleanup
+
+    setSpeaking(true)
+    audio.play().catch(cleanup)
   }
 
   // Reused across utterances in the same thread rather than reconnecting
@@ -136,7 +162,13 @@ export default function Chat() {
     existing?.close()
 
     const ws = await connectVoiceSocket(threadId)
-    ws.onmessage = (e) => handleVoiceEvent(JSON.parse(e.data) as VoiceEvent)
+    ws.onmessage = (e) => {
+      if (e.data instanceof Blob) {
+        playAudio(e.data)
+        return
+      }
+      handleVoiceEvent(JSON.parse(e.data) as VoiceEvent)
+    }
     ws.onclose = () => {
       if (voiceSocketRef.current === ws) voiceSocketRef.current = null
     }
@@ -243,6 +275,7 @@ export default function Chat() {
           </div>
         </div>
 
+        {speaking && <p className="px-4 text-sm text-muted-foreground">Speaking…</p>}
         {error && <p className="px-4 text-sm text-destructive">{error}</p>}
 
         <form

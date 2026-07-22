@@ -3,6 +3,7 @@ import { api } from '@/lib/api'
 export type VoiceEvent =
   | { type: 'transcript'; text: string }
   | { type: 'token'; token: string }
+  | { type: 'audio'; format: string }
   | { type: 'done' }
   | { type: 'error'; detail: string }
 
