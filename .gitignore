@@ -1,0 +1,25 @@
+# --- Python / backend ---
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+.env
+backend/.env
+*.egg-info/
+
+# --- Node / frontend ---
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Env files (never commit secrets) ---
+.env
+.env.local
+.env.*.local
