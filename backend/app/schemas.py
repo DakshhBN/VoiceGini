@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr
 
@@ -25,3 +26,24 @@ class UserOut(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ThreadCreate(BaseModel):
+    title: str | None = None
+
+
+class ThreadOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class MessageIn(BaseModel):
+    content: str
+
+
+class MessageOut(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str

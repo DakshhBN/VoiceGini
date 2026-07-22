@@ -24,6 +24,13 @@ class Settings(BaseSettings):
             return ["http://localhost:5173"]
         return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]
 
+    @property
+    def psycopg_conninfo(self) -> str:
+        # LangGraph's checkpointer opens its own psycopg pool directly
+        # (independent of the SQLAlchemy engine) and needs a bare libpq
+        # DSN, not SQLAlchemy's "postgresql+psycopg://" dialect form.
+        return self.database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+
 
 @lru_cache
 def get_settings() -> Settings:
