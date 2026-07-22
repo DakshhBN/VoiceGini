@@ -26,6 +26,15 @@ export async function getMessages(threadId: string): Promise<Message[]> {
   return res.data
 }
 
+export async function renameThread(threadId: string, title: string): Promise<Thread> {
+  const res = await api.patch<Thread>(`/threads/${threadId}`, { title })
+  return res.data
+}
+
+export async function deleteThread(threadId: string): Promise<void> {
+  await api.delete(`/threads/${threadId}`)
+}
+
 // Hand-rolled fetch() + ReadableStream rather than EventSource or axios:
 // EventSource can't send a POST body or an Authorization header, and
 // axios doesn't expose a streaming read in the browser. Mirrors ChatGini's

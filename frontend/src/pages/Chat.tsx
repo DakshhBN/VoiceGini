@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Mic, Square } from 'lucide-react'
+import { AudioLines, Mic, Pencil, Plus, Send, Sparkles, Square, Trash2, Waves } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,14 +7,19 @@ import {
   type Message,
   type Thread,
   createThread,
+  deleteThread,
   getMessages,
   listThreads,
+  renameThread,
   streamChat,
 } from '@/lib/chat-api'
 import { connectVoiceSocket, sendInterrupt, type VoiceEvent } from '@/lib/voice-api'
 import { VoiceActivityDetector } from '@/lib/vad'
 
 const MAX_RECONNECT_ATTEMPTS = 4
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 420
+const SIDEBAR_DEFAULT_WIDTH = 288
 
 export default function Chat() {
   const { user, logout } = useAuth()
@@ -28,7 +33,11 @@ export default function Chat() {
   const [speaking, setSpeaking] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const resizingRef = useRef(false)
 
   // Voice socket/VAD/playback state lives in refs, not React state - it's
   // mutated from event callbacks (VAD, WebSocket, Audio) that shouldn't
@@ -95,6 +104,26 @@ export default function Chat() {
     }
   }, [])
 
+  // Sidebar drag-to-resize - listens on window rather than the handle
+  // itself so dragging still tracks the mouse once it outruns the (thin)
+  // handle element between fast mousemove events.
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (!resizingRef.current) return
+      const next = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, e.clientX))
+      setSidebarWidth(next)
+    }
+    function onMouseUp() {
+      resizingRef.current = false
+    }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [])
+
   function appendToken(token: string) {
     setMessages((prev) => {
       const last = prev[prev.length - 1]
@@ -115,6 +144,40 @@ export default function Chat() {
     const thread = await createThread()
     setThreads((prev) => [thread, ...prev])
     setActiveThreadId(thread.id)
+  }
+
+  function startEditingThread(thread: Thread) {
+    setEditingThreadId(thread.id)
+    setEditingTitle(thread.title)
+  }
+
+  async function commitEditingThread() {
+    const id = editingThreadId
+    const title = editingTitle.trim()
+    setEditingThreadId(null)
+    if (!id || !title) return
+
+    try {
+      const updated = await renameThread(id, title)
+      setThreads((prev) => prev.map((t) => (t.id === id ? updated : t)))
+    } catch {
+      setError('Failed to rename chat')
+    }
+  }
+
+  async function handleDeleteThread(thread: Thread) {
+    if (!window.confirm(`Delete "${thread.title}"? This can't be undone.`)) return
+
+    try {
+      await deleteThread(thread.id)
+      const remaining = threads.filter((t) => t.id !== thread.id)
+      setThreads(remaining)
+      if (activeThreadId === thread.id) {
+        setActiveThreadId(remaining.length > 0 ? remaining[0].id : null)
+      }
+    } catch {
+      setError('Failed to delete chat')
+    }
   }
 
   async function handleSend() {
@@ -354,44 +417,140 @@ export default function Chat() {
             : null
 
   return (
-    <div className="flex h-svh">
-      <aside className="flex w-64 flex-col border-r p-3">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <span className="truncate text-sm text-muted-foreground">{user?.email}</span>
+    <div className="flex h-svh bg-warm-canvas">
+      <aside
+        className="relative flex shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-4"
+        style={{ width: sidebarWidth }}
+      >
+        <div className="mb-5 flex items-center gap-2.5 px-1">
+          <span className="flex size-8 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-coral">
+            <Sparkles className="size-4" />
+          </span>
+          <span className="font-heading text-base font-semibold tracking-tight text-foreground">
+            VoiceGini
+          </span>
+        </div>
+
+        <Button className="mb-4 justify-start gap-2" onClick={handleNewThread}>
+          <Plus className="size-4" />
+          New chat
+        </Button>
+
+        <div className="flex flex-1 flex-col gap-1 overflow-y-auto">
+          {threads.map((thread) => (
+            <div
+              key={thread.id}
+              className={`group/thread flex items-center gap-0.5 rounded-xl transition-colors ${
+                thread.id === activeThreadId ? 'bg-accent' : 'hover:bg-accent/60'
+              }`}
+            >
+              {editingThreadId === thread.id ? (
+                <input
+                  autoFocus
+                  value={editingTitle}
+                  onChange={(e) => setEditingTitle(e.target.value)}
+                  onBlur={commitEditingThread}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitEditingThread()
+                    if (e.key === 'Escape') setEditingThreadId(null)
+                  }}
+                  className="min-w-0 flex-1 rounded-lg bg-transparent px-3 py-2.5 text-sm text-foreground outline-none ring-2 ring-ring"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setActiveThreadId(thread.id)}
+                  className={`min-w-0 flex-1 truncate px-3 py-2.5 text-left text-sm ${
+                    thread.id === activeThreadId ? 'font-medium text-accent-foreground' : 'text-foreground/80'
+                  }`}
+                >
+                  {thread.title}
+                </button>
+              )}
+              {editingThreadId !== thread.id && (
+                <div className="flex shrink-0 items-center gap-0.5 pr-1.5 opacity-0 transition-opacity group-hover/thread:opacity-100 group-focus-within/thread:opacity-100 has-[:focus-visible]:opacity-100">
+                  <button
+                    type="button"
+                    onClick={() => startEditingThread(thread)}
+                    className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                    title="Rename chat"
+                    aria-label="Rename chat"
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteThread(thread)}
+                    className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    title="Delete chat"
+                    aria-label="Delete chat"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-3 flex items-center justify-between gap-2 border-t border-sidebar-border pt-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+              {user?.email?.[0]?.toUpperCase()}
+            </span>
+            <span className="truncate text-sm text-muted-foreground">{user?.email}</span>
+          </div>
           <Button variant="ghost" size="sm" onClick={logout}>
             Log out
           </Button>
         </div>
-        <Button className="mb-3" onClick={handleNewThread}>
-          New chat
-        </Button>
-        <div className="flex flex-1 flex-col gap-1 overflow-y-auto">
-          {threads.map((thread) => (
-            <button
-              key={thread.id}
-              type="button"
-              onClick={() => setActiveThreadId(thread.id)}
-              className={`truncate rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent ${
-                thread.id === activeThreadId ? 'bg-accent' : ''
-              }`}
-            >
-              {thread.title}
-            </button>
-          ))}
-        </div>
+
+        {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+        <div
+          onMouseDown={() => {
+            resizingRef.current = true
+          }}
+          className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize select-none"
+        />
       </aside>
 
-      <main className="flex flex-1 flex-col">
-        <div className="flex-1 overflow-y-auto p-4">
+      <main className="relative flex flex-1 flex-col overflow-hidden">
+        {/* Faint voice-art watermark echoing the auth pages' decorative
+            panel - kept very low-opacity so it reads as ambient texture
+            behind the (light, functional) chat surface rather than
+            competing with message content. */}
+        <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+          <AudioLines className="absolute top-16 right-12 size-10 rotate-12 text-primary/10" />
+          <Waves className="absolute bottom-24 left-10 size-14 -rotate-6 text-primary/8" />
+          <Sparkles className="absolute top-1/3 right-1/4 size-5 text-primary/10" />
+          <div className="absolute top-1/2 left-1/2 size-72 -translate-x-1/2 -translate-y-1/2 rounded-full border border-primary/10" />
+          <div className="absolute top-1/2 left-1/2 size-96 -translate-x-1/2 -translate-y-1/2 rounded-full border border-primary/5" />
+        </div>
+
+        <div className="relative flex-1 overflow-y-auto px-4 py-8">
           {messages.length === 0 && (
-            <p className="text-center text-sm text-muted-foreground">Start a conversation</p>
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+              <div className="relative flex items-center justify-center">
+                <div className="absolute -inset-6 rounded-full border border-primary/15" />
+                <div className="absolute -inset-3 rounded-full border border-primary/20" />
+                <span className="relative flex size-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-coral">
+                  <Mic className="size-5" />
+                </span>
+              </div>
+              <p className="text-base font-medium text-foreground">Start a conversation</p>
+              <p className="max-w-xs text-sm text-muted-foreground">
+                Type a message or hold the mic to talk.
+              </p>
+            </div>
           )}
           <div className="mx-auto flex max-w-2xl flex-col gap-3">
             {messages.map((message, i) => (
               <div
                 key={i}
-                className={`max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
-                  message.role === 'user' ? 'ml-auto bg-primary text-primary-foreground' : 'bg-muted'
+                className={`max-w-[80%] animate-fade-in-up rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap shadow-soft ${
+                  message.role === 'user'
+                    ? 'ml-auto rounded-br-md bg-primary text-primary-foreground'
+                    : 'rounded-bl-md bg-card text-card-foreground'
                 }`}
               >
                 {message.content || (sending && i === messages.length - 1 ? '…' : '')}
@@ -401,34 +560,51 @@ export default function Chat() {
           </div>
         </div>
 
-        {voiceStatus && <p className="px-4 text-sm text-muted-foreground">{voiceStatus}</p>}
-        {error && <p className="px-4 text-sm text-destructive">{error}</p>}
+        <div className="mx-auto flex w-full max-w-2xl flex-col items-center gap-1.5 px-4">
+          {voiceStatus && (
+            <p className="flex items-center gap-1.5 rounded-full bg-accent px-3 py-1 text-xs font-medium text-accent-foreground">
+              <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+              {voiceStatus}
+            </p>
+          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
 
         <form
           onSubmit={(e) => {
             e.preventDefault()
             handleSend()
           }}
-          className="mx-auto flex w-full max-w-2xl gap-2 p-4"
+          className="mx-auto w-full max-w-2xl p-4 pb-6"
         >
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Message…"
-            disabled={sending}
-          />
-          <Button
-            type="button"
-            variant={voiceModeActive ? 'destructive' : 'secondary'}
-            size="icon"
-            onClick={voiceModeActive ? stopVoiceMode : startVoiceMode}
-            title={voiceModeActive ? 'Stop voice mode' : 'Start voice mode'}
-          >
-            {voiceModeActive ? <Square className="size-4" /> : <Mic className="size-4" />}
-          </Button>
-          <Button type="submit" disabled={sending || !input.trim()}>
-            Send
-          </Button>
+          <div className="flex items-center gap-2 rounded-2xl border border-border bg-card p-1.5 shadow-soft-lg">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Message…"
+              disabled={sending}
+              className="border-0 bg-transparent shadow-none"
+            />
+            <Button
+              type="button"
+              variant={voiceModeActive ? 'destructive' : 'secondary'}
+              size="icon"
+              className={voiceModeActive ? 'animate-soft-pulse' : ''}
+              onClick={voiceModeActive ? stopVoiceMode : startVoiceMode}
+              title={voiceModeActive ? 'Stop voice mode' : 'Start voice mode'}
+            >
+              {voiceModeActive ? <Square className="size-4" /> : <Mic className="size-4" />}
+            </Button>
+            <Button
+              type="submit"
+              disabled={sending || !input.trim()}
+              size="icon"
+              aria-label="Send message"
+              title="Send message"
+            >
+              <Send className="size-4" />
+            </Button>
+          </div>
         </form>
       </main>
     </div>

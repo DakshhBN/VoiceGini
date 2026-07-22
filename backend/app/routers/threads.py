@@ -11,7 +11,7 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.graph import get_graph
 from app.models import Thread, User
-from app.schemas import MessageIn, MessageOut, ThreadCreate, ThreadOut
+from app.schemas import MessageIn, MessageOut, ThreadCreate, ThreadOut, ThreadUpdate
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -44,6 +44,36 @@ async def list_threads(
 ) -> list[Thread]:
     result = await db.execute(select(Thread).where(Thread.user_id == user.id).order_by(Thread.created_at.desc()))
     return list(result.scalars())
+
+
+@router.patch("/{thread_id}", response_model=ThreadOut)
+async def rename_thread(
+    thread_id: uuid.UUID,
+    payload: ThreadUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Thread:
+    thread = await _get_owned_thread(thread_id, db, user)
+    thread.title = payload.title
+    await db.commit()
+    await db.refresh(thread)
+    return thread
+
+
+@router.delete("/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(
+    thread_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> None:
+    thread = await _get_owned_thread(thread_id, db, user)
+    # Cleans up the LangGraph checkpoint history too - otherwise the Thread
+    # row disappears but its (potentially large) conversation state lingers
+    # in the checkpointer's tables forever, orphaned and unreachable.
+    graph = await get_graph()
+    await graph.checkpointer.adelete_thread(str(thread_id))
+    await db.delete(thread)
+    await db.commit()
 
 
 @router.get("/{thread_id}/messages", response_model=list[MessageOut])

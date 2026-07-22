@@ -48,39 +48,48 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Soft coral / warm-white premium theme. Colors are OKLCH so lightness
+   stays perceptually consistent across the palette - everything shares a
+   warm hue family (~30-70) instead of the neutral grays a default shadcn
+   theme ships with, which is what actually produces the "beige/cream"
+   feel rather than looking like a plain white theme with a coral button
+   bolted on. */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --background: oklch(0.985 0.008 75);
+    --foreground: oklch(0.28 0.02 40);
+    --card: oklch(0.995 0.005 75);
+    --card-foreground: oklch(0.28 0.02 40);
+    --popover: oklch(0.995 0.005 75);
+    --popover-foreground: oklch(0.28 0.02 40);
+    --primary: oklch(0.78 0.17 45);
+    --primary-foreground: oklch(0.25 0.03 40);
+    --secondary: oklch(0.955 0.016 55);
+    --secondary-foreground: oklch(0.35 0.035 35);
+    --muted: oklch(0.96 0.012 60);
+    --muted-foreground: oklch(0.52 0.025 40);
+    --accent: oklch(0.94 0.055 48);
+    --accent-foreground: oklch(0.36 0.09 35);
+    --destructive: oklch(0.55 0.2 24);
+    --border: oklch(0.91 0.015 55);
+    --input: oklch(0.91 0.015 55);
+    --ring: oklch(0.78 0.14 45);
+    --chart-1: oklch(0.78 0.17 45);
+    --chart-2: oklch(0.75 0.12 55);
+    --chart-3: oklch(0.65 0.14 15);
+    --chart-4: oklch(0.8 0.09 70);
+    --chart-5: oklch(0.55 0.1 35);
+    --radius: 0.875rem;
+    --sidebar: oklch(0.975 0.012 65);
+    --sidebar-foreground: oklch(0.28 0.02 40);
+    --sidebar-primary: oklch(0.78 0.17 45);
+    --sidebar-primary-foreground: oklch(0.25 0.03 40);
+    --sidebar-accent: oklch(0.94 0.055 48);
+    --sidebar-accent-foreground: oklch(0.36 0.09 35);
+    --sidebar-border: oklch(0.91 0.015 55);
+    --sidebar-ring: oklch(0.78 0.14 45);
+    --shadow-soft: 0 1px 2px oklch(0.35 0.03 40 / 0.04), 0 10px 28px -8px oklch(0.35 0.03 40 / 0.10);
+    --shadow-soft-lg: 0 2px 4px oklch(0.35 0.03 40 / 0.05), 0 20px 48px -12px oklch(0.35 0.03 40 / 0.14);
+    --shadow-coral: 0 10px 26px -8px oklch(0.78 0.17 45 / 0.4);
 }
 
 .dark {
@@ -127,4 +136,60 @@
   html {
     @apply font-sans;
     }
+}
+
+@utility shadow-soft {
+  box-shadow: var(--shadow-soft);
+}
+
+@utility shadow-soft-lg {
+  box-shadow: var(--shadow-soft-lg);
+}
+
+@utility shadow-coral {
+  box-shadow: var(--shadow-coral);
+}
+
+@utility bg-warm-canvas {
+  background:
+    radial-gradient(60rem 40rem at 15% -10%, oklch(0.93 0.05 32 / 0.35), transparent 60%),
+    radial-gradient(50rem 36rem at 110% 10%, oklch(0.96 0.03 55 / 0.5), transparent 55%),
+    var(--background);
+}
+
+@keyframes soft-pulse-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 0 oklch(0.78 0.17 45 / 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px oklch(0.78 0.17 45 / 0);
+  }
+}
+
+@utility animate-soft-pulse {
+  animation: soft-pulse-ring 1.8s ease-out infinite;
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility animate-fade-in-up {
+  animation: fade-in-up 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Dark moody backdrop for the auth pages' decorative voice-art panel -
+   deliberately the one place the theme goes dark, for contrast against
+   the light floating form card on top of it. */
+@utility bg-voice-panel {
+  background:
+    radial-gradient(120% 120% at 22% 20%, oklch(0.62 0.17 40), transparent 62%),
+    linear-gradient(160deg, oklch(0.55 0.15 38), oklch(0.44 0.12 30));
 }

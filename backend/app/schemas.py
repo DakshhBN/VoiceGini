@@ -32,6 +32,10 @@ class ThreadCreate(BaseModel):
     title: str | None = None
 
 
+class ThreadUpdate(BaseModel):
+    title: str
+
+
 class ThreadOut(BaseModel):
     id: uuid.UUID
     title: str

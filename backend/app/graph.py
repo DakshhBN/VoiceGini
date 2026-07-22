@@ -1,4 +1,4 @@
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -10,6 +10,22 @@ from app.usage import log_llm_usage
 settings = get_settings()
 
 _MODEL = "llama-3.3-70b-versatile"
+
+# Every reply is both shown as chat text and read aloud by TTS, so markdown
+# (which reads literally, e.g. "asterisk asterisk") and long multi-paragraph
+# answers break the voice experience - this keeps replies plain and speech-
+# sized without polluting the persisted conversation state (it's added to
+# the LLM call in chat_node below, never returned/checkpointed).
+_SYSTEM_PROMPT = SystemMessage(
+    content=(
+        "You are VoiceGini, a real-time voice assistant. The user is talking to you out "
+        "loud and your reply will be read aloud by text-to-speech, so write exactly as you "
+        "would speak: plain conversational sentences only. Never use markdown - no asterisks, "
+        "no bold/italics, no bullet or numbered lists, no headers, no code blocks. Keep "
+        "answers concise, like a spoken conversation, unless the user explicitly asks for "
+        "more detail."
+    )
+)
 
 # Built lazily, not at import time, so a missing/invalid GROQ_API_KEY
 # doesn't crash the app at startup (mirrors ChatGini's LLM client lesson).
@@ -24,7 +40,7 @@ def get_llm() -> ChatGroq:
 
 
 async def chat_node(state: MessagesState) -> dict[str, list[BaseMessage]]:
-    response = await get_llm().ainvoke(state["messages"])
+    response = await get_llm().ainvoke([_SYSTEM_PROMPT, *state["messages"]])
     log_llm_usage(_MODEL, response.usage_metadata)
     return {"messages": [response]}
 

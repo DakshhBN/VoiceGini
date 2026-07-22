@@ -1,8 +1,10 @@
 import asyncio
 import json
+import logging
 import uuid
 
 from fastapi import APIRouter, WebSocket
+from groq import RateLimitError
 from langchain_core.messages import HumanMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +15,8 @@ from app.graph import get_graph
 from app.models import Thread, User
 from app.stt import transcribe
 from app.tts import synthesize
+
+logger = logging.getLogger("app")
 
 router = APIRouter(tags=["voice"])
 
@@ -71,6 +75,7 @@ async def voice(websocket: WebSocket, thread_id: uuid.UUID) -> None:
             try:
                 text = await transcribe(audio_bytes)
             except Exception:
+                logger.exception("Transcription failed")
                 await websocket.send_json({"type": "error", "detail": "Transcription failed"})
                 return
 
@@ -90,7 +95,18 @@ async def voice(websocket: WebSocket, thread_id: uuid.UUID) -> None:
             if reply_text.strip():
                 try:
                     audio_bytes_out = await synthesize(reply_text)
+                except RateLimitError:
+                    # Groq's TTS model has a low daily token quota on the
+                    # on-demand tier - this fires often enough in practice
+                    # (not just as a rare edge case) that callers deserve a
+                    # message that explains what actually happened rather
+                    # than a generic failure.
+                    logger.warning("TTS rate-limited (reply length=%d chars)", len(reply_text))
+                    await websocket.send_json(
+                        {"type": "error", "detail": "Voice replies are rate-limited right now - try again later"}
+                    )
                 except Exception:
+                    logger.exception("Speech synthesis failed (reply length=%d chars)", len(reply_text))
                     await websocket.send_json({"type": "error", "detail": "Speech synthesis failed"})
                 else:
                     # A JSON marker ahead of the raw bytes tells the
