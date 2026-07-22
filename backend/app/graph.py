@@ -5,8 +5,11 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from psycopg_pool import AsyncConnectionPool
 
 from app.config import get_settings
+from app.usage import log_llm_usage
 
 settings = get_settings()
+
+_MODEL = "llama-3.3-70b-versatile"
 
 # Built lazily, not at import time, so a missing/invalid GROQ_API_KEY
 # doesn't crash the app at startup (mirrors ChatGini's LLM client lesson).
@@ -16,12 +19,13 @@ _llm: ChatGroq | None = None
 def get_llm() -> ChatGroq:
     global _llm
     if _llm is None:
-        _llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=settings.groq_api_key)
+        _llm = ChatGroq(model=_MODEL, api_key=settings.groq_api_key)
     return _llm
 
 
 async def chat_node(state: MessagesState) -> dict[str, list[BaseMessage]]:
     response = await get_llm().ainvoke(state["messages"])
+    log_llm_usage(_MODEL, response.usage_metadata)
     return {"messages": [response]}
 
 
@@ -60,3 +64,16 @@ async def get_graph():
         await checkpointer.setup()
         _compiled_graph = _build_graph().compile(checkpointer=checkpointer)
     return _compiled_graph
+
+
+async def close_graph_pool() -> None:
+    # Without this, shutting down (or Uvicorn's --reload restarting the
+    # process on a file change) leaves the pool's worker tasks running
+    # against a closing event loop, logged as "Task was destroyed but it
+    # is pending!" - harmless in dev, but worth closing properly since a
+    # real deploy stops and restarts the process on every release.
+    global _checkpointer_pool, _compiled_graph
+    if _checkpointer_pool is not None:
+        await _checkpointer_pool.close()
+        _checkpointer_pool = None
+    _compiled_graph = None

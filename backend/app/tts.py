@@ -3,6 +3,7 @@ import asyncio
 from groq import Groq
 
 from app.config import get_settings
+from app.usage import log_tts_usage
 
 settings = get_settings()
 
@@ -37,4 +38,6 @@ async def synthesize(text: str) -> bytes:
         )
         return response.read()
 
-    return await asyncio.to_thread(_call)
+    audio_bytes = await asyncio.to_thread(_call)
+    log_tts_usage(_MODEL, len(text), len(audio_bytes))
+    return audio_bytes

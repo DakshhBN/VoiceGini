@@ -3,8 +3,11 @@ import asyncio
 from groq import Groq
 
 from app.config import get_settings
+from app.usage import log_stt_usage
 
 settings = get_settings()
+
+_MODEL = "whisper-large-v3-turbo"
 
 # Built lazily, not at import time, so a missing/invalid GROQ_API_KEY
 # doesn't crash the app at startup (same lesson as app/graph.py's get_llm).
@@ -24,10 +27,12 @@ async def transcribe(audio_bytes: bytes, filename: str = "audio.webm") -> str:
     # block other requests/connections while waiting on the network.
     def _call() -> str:
         result = get_client().audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
+            model=_MODEL,
             file=(filename, audio_bytes),
             response_format="text",
         )
         return str(result).strip()
 
-    return await asyncio.to_thread(_call)
+    text = await asyncio.to_thread(_call)
+    log_stt_usage(_MODEL, len(audio_bytes), len(text))
+    return text

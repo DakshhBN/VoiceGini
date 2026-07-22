@@ -1,4 +1,6 @@
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,13 +8,31 @@ from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import get_settings
+from app.graph import close_graph_pool
 from app.routers import auth, threads, voice
+
+# Uvicorn configures its own uvicorn/uvicorn.access/uvicorn.error loggers
+# but leaves the root logger untouched - without this, the app's own
+# loggers (including app.usage) sit at the default WARNING level and INFO
+# calls are silently dropped rather than reaching stdout.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# httpx (used under the hood by the Groq SDK) logs one INFO line per
+# outbound request - noisy at the same level as the usage logs it would
+# otherwise bury.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger("app")
 
 settings = get_settings()
 
-app = FastAPI(title="Voicebot API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    await close_graph_pool()
+
+
+app = FastAPI(title="Voicebot API", lifespan=lifespan)
 
 
 class ExceptionLoggingMiddleware:

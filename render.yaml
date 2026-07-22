@@ -1,0 +1,44 @@
+services:
+  - name: voicegini-backend
+    type: web
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRE_MINUTES
+        value: "10080"
+      - key: GROQ_API_KEY
+        sync: false
+      # Set once the frontend service's URL is known (Render assigns it on
+      # first deploy) - e.g. https://voicegini-frontend.onrender.com. Must
+      # be the exact origin, no trailing slash.
+      - key: CORS_ORIGINS_RAW
+        sync: false
+
+  - name: voicegini-frontend
+    type: web
+    runtime: static
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      # React Router handles client-side routing - every path needs to
+      # resolve to index.html rather than a 404 from the static server.
+      - source: /*
+        destination: /index.html
+        type: rewrite
+    envVars:
+      # Vite bakes this in at build time, so it must be set before the
+      # first build - the backend service's URL, e.g.
+      # https://voicegini-backend.onrender.com (no trailing slash).
+      - key: VITE_API_URL
+        sync: false

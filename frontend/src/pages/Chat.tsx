@@ -14,6 +14,8 @@ import {
 import { connectVoiceSocket, sendInterrupt, type VoiceEvent } from '@/lib/voice-api'
 import { VoiceActivityDetector } from '@/lib/vad'
 
+const MAX_RECONNECT_ATTEMPTS = 4
+
 export default function Chat() {
   const { user, logout } = useAuth()
   const [threads, setThreads] = useState<Thread[]>([])
@@ -24,6 +26,7 @@ export default function Chat() {
   const [voiceModeActive, setVoiceModeActive] = useState(false)
   const [userSpeaking, setUserSpeaking] = useState(false)
   const [speaking, setSpeaking] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -36,6 +39,11 @@ export default function Chat() {
   const vadRef = useRef<VoiceActivityDetector | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const currentAudioRef = useRef<HTMLAudioElement | null>(null)
+  // Set right before any deliberate ws.close() so the onclose handler can
+  // tell "we did this on purpose" apart from "the connection dropped" -
+  // only the latter should trigger a reconnect attempt.
+  const intentionalCloseRef = useRef(false)
+  const reconnectAttemptsRef = useRef(0)
 
   useEffect(() => {
     listThreads().then((loaded) => {
@@ -66,6 +74,7 @@ export default function Chat() {
 
   useEffect(() => {
     return () => {
+      intentionalCloseRef.current = true
       voiceSocketRef.current?.close()
       currentAudioRef.current?.pause()
       vadRef.current?.stop()
@@ -183,7 +192,10 @@ export default function Chat() {
     if (existing && voiceThreadIdRef.current === threadId && existing.readyState === WebSocket.OPEN) {
       return existing
     }
-    existing?.close()
+    if (existing) {
+      intentionalCloseRef.current = true
+      existing.close()
+    }
 
     const ws = await connectVoiceSocket(threadId)
     ws.onmessage = (e) => {
@@ -195,10 +207,47 @@ export default function Chat() {
     }
     ws.onclose = () => {
       if (voiceSocketRef.current === ws) voiceSocketRef.current = null
+
+      if (intentionalCloseRef.current) {
+        intentionalCloseRef.current = false
+        return
+      }
+      // Voice mode is still meant to be active (vadRef is only cleared by
+      // stopVoiceMode) - the connection dropped out from under it, so try
+      // to recover rather than silently going deaf.
+      if (vadRef.current) void reconnectVoiceSocket(threadId)
     }
     voiceSocketRef.current = ws
     voiceThreadIdRef.current = threadId
+    reconnectAttemptsRef.current = 0
+    setReconnecting(false)
     return ws
+  }
+
+  async function reconnectVoiceSocket(threadId: string): Promise<void> {
+    if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      setReconnecting(false)
+      setError('Voice channel disconnected')
+      stopVoiceMode()
+      return
+    }
+    reconnectAttemptsRef.current += 1
+    setReconnecting(true)
+
+    const delayMs = Math.min(1000 * 2 ** (reconnectAttemptsRef.current - 1), 8000)
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+
+    // Voice mode may have been stopped manually while we were waiting.
+    if (!vadRef.current) {
+      setReconnecting(false)
+      return
+    }
+
+    try {
+      await ensureVoiceSocket(threadId)
+    } catch {
+      await reconnectVoiceSocket(threadId)
+    }
   }
 
   async function startVoiceMode() {
@@ -223,9 +272,8 @@ export default function Chat() {
       return
     }
 
-    let ws: WebSocket
     try {
-      ws = await ensureVoiceSocket(threadId)
+      await ensureVoiceSocket(threadId)
     } catch {
       stream.getTracks().forEach((track) => track.stop())
       setError('Failed to connect voice channel')
@@ -233,6 +281,9 @@ export default function Chat() {
     }
 
     micStreamRef.current = stream
+    // Reads voiceSocketRef.current rather than closing over a single
+    // WebSocket instance, so a mid-session reconnect (a fresh socket
+    // object) is picked up transparently without rebuilding the VAD.
     const vad = new VoiceActivityDetector(stream, {
       onSpeechStart: () => {
         // Cut the assistant off the instant the user starts talking -
@@ -240,11 +291,13 @@ export default function Chat() {
         // whatever it's still generating for the previous turn.
         setUserSpeaking(true)
         stopPlayback()
-        sendInterrupt(ws)
+        const ws = voiceSocketRef.current
+        if (ws) sendInterrupt(ws)
       },
       onSpeechEnd: (blob) => {
         setUserSpeaking(false)
-        if (ws.readyState !== WebSocket.OPEN) {
+        const ws = voiceSocketRef.current
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
           setError('Voice channel disconnected')
           return
         }
@@ -266,15 +319,17 @@ export default function Chat() {
     setUserSpeaking(false)
   }
 
-  const voiceStatus = userSpeaking
-    ? 'Hearing you…'
-    : sending
-      ? 'Thinking…'
-      : speaking
-        ? 'Speaking…'
-        : voiceModeActive
-          ? 'Listening…'
-          : null
+  const voiceStatus = reconnecting
+    ? 'Reconnecting…'
+    : userSpeaking
+      ? 'Hearing you…'
+      : sending
+        ? 'Thinking…'
+        : speaking
+          ? 'Speaking…'
+          : voiceModeActive
+            ? 'Listening…'
+            : null
 
   return (
     <div className="flex h-svh">

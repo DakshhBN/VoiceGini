@@ -26,11 +26,13 @@ const DEFAULT_OPTIONS: VadOptions = {
 }
 
 export class VoiceActivityDetector {
+  private readonly stream: MediaStream
+  private readonly callbacks: VadCallbacks
   private readonly options: VadOptions
   private readonly audioContext: AudioContext
   private readonly analyser: AnalyserNode
   private readonly source: MediaStreamAudioSourceNode
-  private readonly sampleData: Uint8Array
+  private readonly sampleData: Uint8Array<ArrayBuffer>
   private recorder: MediaRecorder | null = null
   private chunks: BlobPart[] = []
   private intervalId: ReturnType<typeof setInterval> | null = null
@@ -38,11 +40,9 @@ export class VoiceActivityDetector {
   private speechStartedAt = 0
   private silenceStartedAt: number | null = null
 
-  constructor(
-    private readonly stream: MediaStream,
-    private readonly callbacks: VadCallbacks,
-    options: Partial<VadOptions> = {},
-  ) {
+  constructor(stream: MediaStream, callbacks: VadCallbacks, options: Partial<VadOptions> = {}) {
+    this.stream = stream
+    this.callbacks = callbacks
     this.options = { ...DEFAULT_OPTIONS, ...options }
     this.audioContext = new AudioContext()
     this.source = this.audioContext.createMediaStreamSource(stream)
