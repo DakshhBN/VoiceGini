@@ -7,6 +7,14 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
+      # Without this, Render defaults to its latest Python (3.14 as of
+      # this writing), which is too new for pydantic-core 2.27.2 to have
+      # a prebuilt wheel for - pip falls back to building it from source
+      # via Rust/maturin, which fails in Render's build sandbox (its
+      # Cargo registry cache dir is read-only). Pin to a version with
+      # wheels available for every pinned dependency.
+      - key: PYTHON_VERSION
+        value: 3.10.14
       - key: DATABASE_URL
         sync: false
       - key: JWT_SECRET
