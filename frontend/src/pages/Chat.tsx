@@ -44,6 +44,15 @@ export default function Chat() {
   // only the latter should trigger a reconnect attempt.
   const intentionalCloseRef = useRef(false)
   const reconnectAttemptsRef = useRef(0)
+  // Set right before setActiveThreadId() when the caller (handleSend,
+  // startVoiceMode) just created the thread itself and is about to seed
+  // its messages optimistically - without this, the fetch below would
+  // race that optimistic update: it always resolves to [] (the thread is
+  // genuinely brand new in the DB), but if it lands *after* the optimistic
+  // bubbles were added, it wipes them out. The next streamed token then
+  // updates "the last message" of an empty array and throws, and with no
+  // error boundary the whole tree unmounts to a blank page.
+  const skipNextMessagesFetchRef = useRef(false)
 
   useEffect(() => {
     listThreads().then((loaded) => {
@@ -55,6 +64,10 @@ export default function Chat() {
   useEffect(() => {
     if (!activeThreadId) {
       setMessages([])
+      return
+    }
+    if (skipNextMessagesFetchRef.current) {
+      skipNextMessagesFetchRef.current = false
       return
     }
     getMessages(activeThreadId).then(setMessages)
@@ -84,8 +97,15 @@ export default function Chat() {
 
   function appendToken(token: string) {
     setMessages((prev) => {
+      const last = prev[prev.length - 1]
+      // Defensive: there's no error boundary above this component, so a
+      // token arriving with no assistant bubble to append to (a bug
+      // elsewhere in the message-list bookkeeping) should degrade to a
+      // new bubble rather than crash the whole tree to a blank page.
+      if (!last || last.role !== 'assistant') {
+        return [...prev, { role: 'assistant', content: token }]
+      }
       const next = [...prev]
-      const last = next[next.length - 1]
       next[next.length - 1] = { role: 'assistant', content: last.content + token }
       return next
     })
@@ -106,6 +126,7 @@ export default function Chat() {
       const thread = await createThread()
       setThreads((prev) => [thread, ...prev])
       threadId = thread.id
+      skipNextMessagesFetchRef.current = true
       setActiveThreadId(threadId)
     }
 
@@ -259,6 +280,7 @@ export default function Chat() {
       const thread = await createThread()
       setThreads((prev) => [thread, ...prev])
       threadId = thread.id
+      skipNextMessagesFetchRef.current = true
       setActiveThreadId(threadId)
     }
 
