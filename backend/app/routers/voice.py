@@ -1,6 +1,8 @@
+import asyncio
+import json
 import uuid
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket
 from langchain_core.messages import HumanMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,43 +59,93 @@ async def voice(websocket: WebSocket, thread_id: uuid.UUID) -> None:
         graph = await get_graph()
         config = {"configurable": {"thread_id": str(thread_id)}}
 
+        async def process_turn(audio_bytes: bytes) -> None:
+            # Runs as a cancellable Task (see cancel_current below) - this
+            # is why TTS was deliberately kept out of the LangGraph node
+            # back in Phase 1/3: cancelling a plain asyncio Task at any
+            # await point (mid-transcription, mid-token-stream, or
+            # mid-synthesis) is clean, whereas cancelling generation
+            # *inside* a graph node is not. If the LLM call in chat_node
+            # never completes, its superstep never checkpoints, so a
+            # barge-in never leaves a half-written reply in history.
+            try:
+                text = await transcribe(audio_bytes)
+            except Exception:
+                await websocket.send_json({"type": "error", "detail": "Transcription failed"})
+                return
+
+            if not text:
+                await websocket.send_json({"type": "error", "detail": "No speech detected"})
+                return
+
+            await websocket.send_json({"type": "transcript", "text": text})
+
+            input_state = {"messages": [HumanMessage(content=text)]}
+            reply_text = ""
+            async for chunk, _metadata in graph.astream(input_state, config, stream_mode="messages"):
+                if chunk.content:
+                    reply_text += chunk.content
+                    await websocket.send_json({"type": "token", "token": chunk.content})
+
+            if reply_text.strip():
+                try:
+                    audio_bytes_out = await synthesize(reply_text)
+                except Exception:
+                    await websocket.send_json({"type": "error", "detail": "Speech synthesis failed"})
+                else:
+                    # A JSON marker ahead of the raw bytes tells the
+                    # client the next binary frame is audio, not a
+                    # continuation of the text stream - the two share
+                    # one WS connection but are distinguished by frame
+                    # type (text vs binary) on the client side.
+                    await websocket.send_json({"type": "audio", "format": "wav"})
+                    await websocket.send_bytes(audio_bytes_out)
+
+            await websocket.send_json({"type": "done"})
+
+        current_task: asyncio.Task | None = None
+
+        async def cancel_current() -> None:
+            nonlocal current_task
+            if current_task is None or current_task.done():
+                current_task = None
+                return
+            current_task.cancel()
+            try:
+                await current_task
+            except asyncio.CancelledError:
+                pass
+            current_task = None
+            await websocket.send_json({"type": "interrupted"})
+
         try:
             while True:
-                audio_bytes = await websocket.receive_bytes()
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
 
-                try:
-                    text = await transcribe(audio_bytes)
-                except Exception:
-                    await websocket.send_json({"type": "error", "detail": "Transcription failed"})
+                audio_bytes = message.get("bytes")
+                if audio_bytes is not None:
+                    # A new utterance always wins - if the previous turn
+                    # (still transcribing, still streaming tokens, or still
+                    # synthesizing) hasn't finished, cancel it first so the
+                    # two never write to the same socket concurrently.
+                    await cancel_current()
+                    current_task = asyncio.create_task(process_turn(audio_bytes))
                     continue
 
-                if not text:
-                    await websocket.send_json({"type": "error", "detail": "No speech detected"})
-                    continue
-
-                await websocket.send_json({"type": "transcript", "text": text})
-
-                input_state = {"messages": [HumanMessage(content=text)]}
-                reply_text = ""
-                async for chunk, _metadata in graph.astream(input_state, config, stream_mode="messages"):
-                    if chunk.content:
-                        reply_text += chunk.content
-                        await websocket.send_json({"type": "token", "token": chunk.content})
-
-                if reply_text.strip():
+                text_data = message.get("text")
+                if text_data is not None:
                     try:
-                        audio_bytes = await synthesize(reply_text)
-                    except Exception:
-                        await websocket.send_json({"type": "error", "detail": "Speech synthesis failed"})
-                    else:
-                        # A JSON marker ahead of the raw bytes tells the
-                        # client the next binary frame is audio, not a
-                        # continuation of the text stream - the two share
-                        # one WS connection but are distinguished by frame
-                        # type (text vs binary) on the client side.
-                        await websocket.send_json({"type": "audio", "format": "wav"})
-                        await websocket.send_bytes(audio_bytes)
-
-                await websocket.send_json({"type": "done"})
-        except WebSocketDisconnect:
-            pass
+                        payload = json.loads(text_data)
+                    except ValueError:
+                        continue
+                    # The client sends this the instant its VAD detects the
+                    # user has started talking again - before it even has
+                    # the full new utterance to send - so playback of a
+                    # stale reply can be cut as early as possible.
+                    if payload.get("type") == "interrupt":
+                        await cancel_current()
+        finally:
+            if current_task is not None and not current_task.done():
+                current_task.cancel()

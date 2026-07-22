@@ -11,7 +11,8 @@ import {
   listThreads,
   streamChat,
 } from '@/lib/chat-api'
-import { connectVoiceSocket, type VoiceEvent } from '@/lib/voice-api'
+import { connectVoiceSocket, sendInterrupt, type VoiceEvent } from '@/lib/voice-api'
+import { VoiceActivityDetector } from '@/lib/vad'
 
 export default function Chat() {
   const { user, logout } = useAuth()
@@ -20,24 +21,21 @@ export default function Chat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
-  const [recording, setRecording] = useState(false)
+  const [voiceModeActive, setVoiceModeActive] = useState(false)
+  const [userSpeaking, setUserSpeaking] = useState(false)
   const [speaking, setSpeaking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // Voice socket state lives in refs, not React state - it's mutated from
-  // event callbacks (MediaRecorder, WebSocket) that shouldn't trigger
-  // re-renders on every chunk, and the socket must survive across
-  // multiple push-to-talk utterances within the same thread.
+  // Voice socket/VAD/playback state lives in refs, not React state - it's
+  // mutated from event callbacks (VAD, WebSocket, Audio) that shouldn't
+  // trigger re-renders on every chunk, and it all needs to survive across
+  // multiple utterances within one continuous voice-mode session.
   const voiceSocketRef = useRef<WebSocket | null>(null)
   const voiceThreadIdRef = useRef<string | null>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const activeThreadIdRef = useRef<string | null>(null)
+  const vadRef = useRef<VoiceActivityDetector | null>(null)
+  const micStreamRef = useRef<MediaStream | null>(null)
   const currentAudioRef = useRef<HTMLAudioElement | null>(null)
-
-  useEffect(() => {
-    activeThreadIdRef.current = activeThreadId
-  }, [activeThreadId])
 
   useEffect(() => {
     listThreads().then((loaded) => {
@@ -58,10 +56,20 @@ export default function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Voice mode is scoped to one thread's socket/VAD session - switching
+  // threads mid-session would otherwise keep listening on a mic bound to
+  // the old thread's connection.
+  useEffect(() => {
+    if (voiceModeActive) stopVoiceMode()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThreadId])
+
   useEffect(() => {
     return () => {
       voiceSocketRef.current?.close()
       currentAudioRef.current?.pause()
+      vadRef.current?.stop()
+      micStreamRef.current?.getTracks().forEach((track) => track.stop())
     }
   }, [])
 
@@ -125,6 +133,16 @@ export default function Chat() {
       case 'done':
         setSending(false)
         break
+      case 'interrupted':
+        setSending(false)
+        // Drop a still-empty assistant bubble left over from a turn that
+        // got cut off before any text came back.
+        setMessages((prev) => {
+          const last = prev[prev.length - 1]
+          if (last && last.role === 'assistant' && last.content === '') return prev.slice(0, -1)
+          return prev
+        })
+        break
       case 'error':
         setError(event.detail)
         setSending(false)
@@ -132,8 +150,14 @@ export default function Chat() {
     }
   }
 
-  function playAudio(blob: Blob) {
+  function stopPlayback() {
     currentAudioRef.current?.pause()
+    currentAudioRef.current = null
+    setSpeaking(false)
+  }
+
+  function playAudio(blob: Blob) {
+    stopPlayback()
 
     const url = URL.createObjectURL(blob)
     const audio = new Audio(url)
@@ -177,8 +201,8 @@ export default function Chat() {
     return ws
   }
 
-  async function startRecording() {
-    if (recording || sending) return
+  async function startVoiceMode() {
+    if (voiceModeActive) return
     setError(null)
 
     let threadId = activeThreadId
@@ -191,41 +215,66 @@ export default function Chat() {
 
     let stream: MediaStream
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      })
     } catch {
       setError('Microphone access denied')
       return
     }
 
-    const socketPromise = ensureVoiceSocket(threadId)
-
-    const chunks: BlobPart[] = []
-    const recorder = new MediaRecorder(stream)
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data)
-    }
-    recorder.onstop = async () => {
+    let ws: WebSocket
+    try {
+      ws = await ensureVoiceSocket(threadId)
+    } catch {
       stream.getTracks().forEach((track) => track.stop())
-      const blob = new Blob(chunks, { type: recorder.mimeType })
-      try {
-        const ws = await socketPromise
+      setError('Failed to connect voice channel')
+      return
+    }
+
+    micStreamRef.current = stream
+    const vad = new VoiceActivityDetector(stream, {
+      onSpeechStart: () => {
+        // Cut the assistant off the instant the user starts talking -
+        // locally right away, and over the wire so the server abandons
+        // whatever it's still generating for the previous turn.
+        setUserSpeaking(true)
+        stopPlayback()
+        sendInterrupt(ws)
+      },
+      onSpeechEnd: (blob) => {
+        setUserSpeaking(false)
+        if (ws.readyState !== WebSocket.OPEN) {
+          setError('Voice channel disconnected')
+          return
+        }
         setSending(true)
         ws.send(blob)
-      } catch {
-        setError('Failed to connect voice channel')
-      }
-    }
-
-    mediaRecorderRef.current = recorder
-    recorder.start()
-    setRecording(true)
+      },
+    })
+    vad.start()
+    vadRef.current = vad
+    setVoiceModeActive(true)
   }
 
-  function stopRecording() {
-    if (!recording) return
-    mediaRecorderRef.current?.stop()
-    setRecording(false)
+  function stopVoiceMode() {
+    vadRef.current?.stop()
+    vadRef.current = null
+    micStreamRef.current?.getTracks().forEach((track) => track.stop())
+    micStreamRef.current = null
+    setVoiceModeActive(false)
+    setUserSpeaking(false)
   }
+
+  const voiceStatus = userSpeaking
+    ? 'Hearing you…'
+    : sending
+      ? 'Thinking…'
+      : speaking
+        ? 'Speaking…'
+        : voiceModeActive
+          ? 'Listening…'
+          : null
 
   return (
     <div className="flex h-svh">
@@ -275,7 +324,7 @@ export default function Chat() {
           </div>
         </div>
 
-        {speaking && <p className="px-4 text-sm text-muted-foreground">Speaking…</p>}
+        {voiceStatus && <p className="px-4 text-sm text-muted-foreground">{voiceStatus}</p>}
         {error && <p className="px-4 text-sm text-destructive">{error}</p>}
 
         <form
@@ -293,23 +342,12 @@ export default function Chat() {
           />
           <Button
             type="button"
-            variant={recording ? 'destructive' : 'secondary'}
+            variant={voiceModeActive ? 'destructive' : 'secondary'}
             size="icon"
-            disabled={sending && !recording}
-            onMouseDown={startRecording}
-            onMouseUp={stopRecording}
-            onMouseLeave={stopRecording}
-            onTouchStart={(e) => {
-              e.preventDefault()
-              startRecording()
-            }}
-            onTouchEnd={(e) => {
-              e.preventDefault()
-              stopRecording()
-            }}
-            title="Hold to talk"
+            onClick={voiceModeActive ? stopVoiceMode : startVoiceMode}
+            title={voiceModeActive ? 'Stop voice mode' : 'Start voice mode'}
           >
-            {recording ? <Square className="size-4" /> : <Mic className="size-4" />}
+            {voiceModeActive ? <Square className="size-4" /> : <Mic className="size-4" />}
           </Button>
           <Button type="submit" disabled={sending || !input.trim()}>
             Send

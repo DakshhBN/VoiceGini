@@ -5,7 +5,17 @@ export type VoiceEvent =
   | { type: 'token'; token: string }
   | { type: 'audio'; format: string }
   | { type: 'done' }
+  | { type: 'interrupted' }
   | { type: 'error'; detail: string }
+
+// Sent the instant the client's VAD detects the user talking again, ahead
+// of the new utterance's audio - lets the server cancel a still-in-flight
+// reply as early as possible instead of waiting for the full recording.
+export function sendInterrupt(ws: WebSocket): void {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'interrupt' }))
+  }
+}
 
 async function getWsTicket(): Promise<string> {
   const res = await api.post<{ ticket: string }>('/auth/ws-ticket')
