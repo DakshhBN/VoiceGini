@@ -517,8 +517,10 @@ export default function Chat() {
           onMouseDown={() => {
             resizingRef.current = true
           }}
-          className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize select-none"
-        />
+          className="group absolute top-0 right-0 h-full w-1.5 cursor-col-resize select-none"
+        >
+          <div className="absolute inset-y-0 right-0 w-0.5 bg-transparent transition-colors group-hover:bg-primary/70" />
+        </div>
       </aside>
 
       <main className="relative flex flex-1 flex-col overflow-hidden">
