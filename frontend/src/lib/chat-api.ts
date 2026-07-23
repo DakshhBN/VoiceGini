@@ -43,6 +43,7 @@ export async function streamChat(
   threadId: string,
   content: string,
   onToken: (token: string) => void,
+  onTitle?: (title: string) => void,
 ): Promise<void> {
   const token = localStorage.getItem('access_token')
   const baseURL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
@@ -76,8 +77,12 @@ export async function streamChat(
       if (!event.startsWith('data: ')) continue
       const data = event.slice('data: '.length)
       if (data === '[DONE]') return
-      const parsed = JSON.parse(data) as { token: string }
-      onToken(parsed.token)
+      const parsed = JSON.parse(data) as { token: string } | { title: string }
+      if ('title' in parsed) {
+        onTitle?.(parsed.title)
+      } else {
+        onToken(parsed.token)
+      }
     }
   }
 }

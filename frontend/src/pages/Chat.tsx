@@ -140,6 +140,10 @@ export default function Chat() {
     })
   }
 
+  function updateThreadTitle(threadId: string, title: string) {
+    setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, title } : t)))
+  }
+
   async function handleNewThread() {
     const thread = await createThread()
     setThreads((prev) => [thread, ...prev])
@@ -199,7 +203,7 @@ export default function Chat() {
     setMessages((prev) => [...prev, { role: 'user', content }, { role: 'assistant', content: '' }])
 
     try {
-      await streamChat(threadId, content, appendToken)
+      await streamChat(threadId, content, appendToken, (title) => updateThreadTitle(threadId, title))
     } catch {
       setError('Failed to get a response')
     } finally {
@@ -239,6 +243,9 @@ export default function Chat() {
       case 'error':
         setError(event.detail)
         setSending(false)
+        break
+      case 'title':
+        if (voiceThreadIdRef.current) updateThreadTitle(voiceThreadIdRef.current, event.title)
         break
     }
   }

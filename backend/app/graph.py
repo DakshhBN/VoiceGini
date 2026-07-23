@@ -1,4 +1,4 @@
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -43,6 +43,24 @@ async def chat_node(state: MessagesState) -> dict[str, list[BaseMessage]]:
     response = await get_llm().ainvoke([_SYSTEM_PROMPT, *state["messages"]])
     log_llm_usage(_MODEL, response.usage_metadata)
     return {"messages": [response]}
+
+
+_TITLE_SYSTEM_PROMPT = SystemMessage(
+    content=(
+        "Summarize the general topic of the user's message as a short chat title: "
+        "3 to 6 words, no punctuation, no quotes, title case. Reply with only the title."
+    )
+)
+
+
+# A plain LLM call, deliberately outside the graph - a title is a one-off
+# label for the thread, not part of the conversation, so it must never be
+# checkpointed as a message.
+async def generate_title(first_message: str) -> str:
+    response = await get_llm().ainvoke([_TITLE_SYSTEM_PROMPT, HumanMessage(content=first_message)])
+    log_llm_usage(_MODEL, response.usage_metadata)
+    title = str(response.content).strip().strip('"').strip("'")
+    return title[:60] if title else "New chat"
 
 
 def _build_graph() -> StateGraph:

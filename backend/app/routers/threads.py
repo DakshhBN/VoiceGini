@@ -1,17 +1,20 @@
 import json
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
-from app.database import get_db
-from app.graph import get_graph
+from app.database import AsyncSessionLocal, get_db
+from app.graph import generate_title, get_graph
 from app.models import Thread, User
 from app.schemas import MessageIn, MessageOut, ThreadCreate, ThreadOut, ThreadUpdate
+
+logger = logging.getLogger("app")
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 
@@ -101,7 +104,11 @@ async def chat(
 ) -> StreamingResponse:
     # Ownership check happens here, before the graph is touched - the
     # graph itself has no user concept, only an opaque thread_id.
-    await _get_owned_thread(thread_id, db, user)
+    thread = await _get_owned_thread(thread_id, db, user)
+    # A thread is only ever auto-titled off its first message - checking
+    # the still-default title (rather than e.g. message count) means one
+    # extra query isn't needed, and a user's own rename is never overwritten.
+    needs_title = thread.title == "New chat"
 
     graph = await get_graph()
     config = {"configurable": {"thread_id": str(thread_id)}}
@@ -111,6 +118,26 @@ async def chat(
         async for chunk, _metadata in graph.astream(input_state, config, stream_mode="messages"):
             if chunk.content:
                 yield f"data: {json.dumps({'token': chunk.content})}\n\n"
+
+        if needs_title:
+            try:
+                title = await generate_title(payload.content)
+            except Exception:
+                logger.exception("Thread title generation failed")
+            else:
+                # A fresh session rather than the request's `db` - by the
+                # time this generator resumes after the token loop above,
+                # FastAPI has already torn down the Depends(get_db) session
+                # (its cleanup isn't actually tied to the streaming body
+                # finishing), so committing through `db` here silently
+                # doesn't persist anything.
+                async with AsyncSessionLocal() as title_db:
+                    await title_db.execute(
+                        update(Thread).where(Thread.id == thread_id).values(title=title)
+                    )
+                    await title_db.commit()
+                yield f"data: {json.dumps({'title': title})}\n\n"
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

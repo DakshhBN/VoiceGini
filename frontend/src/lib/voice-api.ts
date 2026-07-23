@@ -7,6 +7,7 @@ export type VoiceEvent =
   | { type: 'done' }
   | { type: 'interrupted' }
   | { type: 'error'; detail: string }
+  | { type: 'title'; title: string }
 
 // Sent the instant the client's VAD detects the user talking again, ahead
 // of the new utterance's audio - lets the server cancel a still-in-flight

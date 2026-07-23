@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import decode_ws_ticket
 from app.database import AsyncSessionLocal
-from app.graph import get_graph
+from app.graph import generate_title, get_graph
 from app.models import Thread, User
 from app.stt import transcribe
 from app.tts import synthesize
@@ -21,7 +21,7 @@ logger = logging.getLogger("app")
 router = APIRouter(tags=["voice"])
 
 
-async def _authenticate(websocket: WebSocket, thread_id: uuid.UUID, db: AsyncSession) -> bool:
+async def _authenticate(websocket: WebSocket, thread_id: uuid.UUID, db: AsyncSession) -> Thread | None:
     """Validates the ws_ticket and thread ownership before accept() - an
     invalid/missing ticket or a thread the ticket's user doesn't own gets
     the handshake rejected outright (Starlette turns a pre-accept close()
@@ -32,20 +32,21 @@ async def _authenticate(websocket: WebSocket, thread_id: uuid.UUID, db: AsyncSes
     user_id = decode_ws_ticket(ticket) if ticket else None
     if user_id is None:
         await websocket.close(code=4401)
-        return False
+        return None
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
         await websocket.close(code=4401)
-        return False
+        return None
 
     result = await db.execute(select(Thread).where(Thread.id == thread_id, Thread.user_id == user.id))
-    if result.scalar_one_or_none() is None:
+    thread = result.scalar_one_or_none()
+    if thread is None:
         await websocket.close(code=4404)
-        return False
+        return None
 
-    return True
+    return thread
 
 
 @router.websocket("/ws/threads/{thread_id}/voice")
@@ -56,14 +57,20 @@ async def voice(websocket: WebSocket, thread_id: uuid.UUID) -> None:
     # it manually keeps the pre-accept auth check and the connection's
     # lifetime obviously scoped together.
     async with AsyncSessionLocal() as db:
-        if not await _authenticate(websocket, thread_id, db):
+        thread = await _authenticate(websocket, thread_id, db)
+        if thread is None:
             return
 
         await websocket.accept()
         graph = await get_graph()
         config = {"configurable": {"thread_id": str(thread_id)}}
+        # Only the first utterance of a still-untitled thread triggers a
+        # title - flipped off after use so a long continuous voice session
+        # doesn't regenerate it on every later utterance.
+        needs_title = thread.title == "New chat"
 
         async def process_turn(audio_bytes: bytes) -> None:
+            nonlocal needs_title
             # Runs as a cancellable Task (see cancel_current below) - this
             # is why TTS was deliberately kept out of the LangGraph node
             # back in Phase 1/3: cancelling a plain asyncio Task at any
@@ -84,6 +91,17 @@ async def voice(websocket: WebSocket, thread_id: uuid.UUID) -> None:
                 return
 
             await websocket.send_json({"type": "transcript", "text": text})
+
+            if needs_title:
+                needs_title = False
+                try:
+                    title = await generate_title(text)
+                except Exception:
+                    logger.exception("Thread title generation failed")
+                else:
+                    thread.title = title
+                    await db.commit()
+                    await websocket.send_json({"type": "title", "title": title})
 
             input_state = {"messages": [HumanMessage(content=text)]}
             reply_text = ""
