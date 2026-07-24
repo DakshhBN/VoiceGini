@@ -1,6 +1,17 @@
-# Voicebot
+# VoiceGini
 
 Speech-to-speech voicebot: browser mic/speaker in, cascaded STT -> LangGraph/Groq LLM -> TTS pipeline out, real-time over WebSocket.
+
+**Live**: https://voicegini-frontend.onrender.com
+(free-tier backend cold-starts after 15 min idle - first request/connect can take 30-60s)
+
+## Features
+
+- Real-time voice conversation with barge-in (talk over the assistant to interrupt it)
+- Text chat as an alternative to voice, same threads/history either way
+- Chat threads: create, rename, delete; auto-titled from the first message
+- Resizable sidebar
+- Coral/warm-white UI theme
 
 ## Architecture
 
@@ -17,7 +28,8 @@ Speech-to-speech voicebot: browser mic/speaker in, cascaded STT -> LangGraph/Gro
 - **Phase 2**: add STT + WebSocket ticket auth, no VAD/TTS.
 - **Phase 3**: add TTS, full voice loop, no interruption yet.
 - **Phase 4**: add VAD + barge-in/interruption handling.
-- **Phase 5** (current): polish, deploy, harden.
+- **Phase 5**: polish, deploy, harden.
+- **Post-launch** (current): rebrand, UI redesign, thread management, auto-titling.
 
 ## Repo layout
 
